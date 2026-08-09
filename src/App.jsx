@@ -575,23 +575,27 @@ function PayRow({ customer, existing, onSave }) {
   const [editingRow, setEditingRow] = useState(!existing);
   const [status, setStatus] = useState(existing?.status || "");
   const [keterangan, setKeterangan] = useState(existing?.keterangan || "");
+  const [jumlahInput, setJumlahInput] = useState(existing?.jumlah ? String(existing.jumlah) : "");
   const tagihan = effectiveTagihan(customer);
+  const isLunas = status === "cash" || status === "transfer";
 
   const submit = () => {
     if (!status) return;
-    const jumlah = status === "cash" || status === "transfer" ? tagihan : 0;
+    if (isLunas && !jumlahInput) return;
+    const jumlah = isLunas ? Number(jumlahInput) || 0 : 0;
     onSave(customer, status, keterangan, jumlah);
     setEditingRow(false);
   };
 
   if (!editingRow && existing) {
     const st = STATUS_LABEL[existing.status];
+    const isPaidExisting = existing.status === "cash" || existing.status === "transfer";
     return (
       <div className="rounded-xl bg-white border border-gray-100 p-3">
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm font-medium" style={{ color: INK }}>{customer.nama}</div>
-            <div className="text-xs text-gray-400">{customer.daerah} · {rupiah(tagihan)}/bln</div>
+            <div className="text-xs text-gray-400">{customer.daerah} · {isPaidExisting ? rupiah(existing.jumlah) : rupiah(tagihan) + "/bln"}</div>
             {existing.keterangan && <div className="text-xs text-gray-400 italic mt-1">"{existing.keterangan}"</div>}
           </div>
           <div className="flex flex-col items-end gap-1">
@@ -606,7 +610,7 @@ function PayRow({ customer, existing, onSave }) {
   return (
     <div className="rounded-xl bg-white border border-gray-100 p-3">
       <div className="text-sm font-medium" style={{ color: INK }}>{customer.nama} {customer.status !== "aktif" && <Badge color={AMBER} bg="#FBEAE6">{customer.status}</Badge>}</div>
-      <div className="text-xs text-gray-400 mb-2">{customer.daerah} · {rupiah(tagihan)}/bln{customer.dendaBulanDepan && <span style={{ color: AMBER }}> (denda dobel aktif)</span>}</div>
+      <div className="text-xs text-gray-400 mb-2">{customer.daerah}{customer.dendaBulanDepan && <span style={{ color: AMBER }}> (denda dobel aktif)</span>}</div>
       <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-2 outline-none">
         <option value="">Pilih status bayar...</option>
         <option value="cash">Lunas · Cash</option>
@@ -614,11 +618,18 @@ function PayRow({ customer, existing, onSave }) {
         <option value="belum">Belum Bayar</option>
         <option value="belum_dobel">Belum Bayar — Dobel Bulan Depan</option>
       </select>
+      {isLunas && (
+        <div className="mb-2">
+          <label className="text-xs text-gray-500">Jumlah diterima (Rp)</label>
+          <input type="number" value={jumlahInput} onChange={(e) => setJumlahInput(e.target.value)} placeholder="Tulis jumlah yang diterima"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none focus:border-gray-400" />
+        </div>
+      )}
       <textarea value={keterangan} onChange={(e) => setKeterangan(e.target.value)} placeholder="Keterangan (opsional)" rows={2}
         className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-2 outline-none resize-none" />
       <div className="flex gap-2">
         {existing && <button onClick={() => setEditingRow(false)} className="flex-1 text-xs font-medium py-2 rounded-lg border border-gray-200 text-gray-500">Batal</button>}
-        <button onClick={submit} disabled={!status} className="flex-1 text-xs font-semibold py-2 rounded-lg text-white disabled:opacity-40" style={{ background: TEAL }}>Simpan</button>
+        <button onClick={submit} disabled={!status || (isLunas && !jumlahInput)} className="flex-1 text-xs font-semibold py-2 rounded-lg text-white disabled:opacity-40" style={{ background: TEAL }}>Simpan</button>
       </div>
     </div>
   );
