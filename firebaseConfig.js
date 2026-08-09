@@ -1,11 +1,11 @@
-// Config project Firebase Anda (pts-d7256). Kalau suatu saat ganti project,
+// Config project Firebase Anda (buku-tagihan-1ba54). Kalau suatu saat ganti project,
 // ambil ulang dari Firebase Console -> Project settings -> General -> Your apps.
 export const firebaseConfig = {
-  apiKey: "AIzaSyCDLjE4fpJLwGd_SU0Yqnm80YrWur-8eW4",
-  authDomain: "pts-d7256.firebaseapp.com",
-  projectId: "pts-d7256",
-  storageBucket: "pts-d7256.firebasestorage.app",
-  messagingSenderId: "992314273571",
-  appId: "1:992314273571:web:8f8a6aa04495de5b0a2696",
-  measurementId: "G-V96FDBN6LS",
+  apiKey: "AIzaSyB7qv17rf1rcru_kdvnKCeUCqeBIF9QSCk",
+  authDomain: "buku-tagihan-1ba54.firebaseapp.com",
+  projectId: "buku-tagihan-1ba54",
+  storageBucket: "buku-tagihan-1ba54.firebasestorage.app",
+  messagingSenderId: "58609477439",
+  appId: "1:58609477439:web:8cee8f14c46cd4ba1a158a",
+  measurementId: "G-9JLDWYJPQ4",
 };
