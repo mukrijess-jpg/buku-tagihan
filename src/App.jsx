@@ -127,6 +127,51 @@ function StatCard({ icon: Icon, label, value, sub, accent }) {
 }
 function effectiveTagihan(c) { return c.dendaBulanDepan ? c.harga * 2 : c.harga; }
 
+// ---------- Riwayat rinci per pelanggan (dipakai Admin & Penagih) ----------
+function HistoryRow({ customer, payment, amountColor }) {
+  const isPaid = payment && (payment.status === "cash" || payment.status === "transfer");
+  return (
+    <div className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0 gap-2">
+      <div className="min-w-0">
+        <div className="text-sm font-medium truncate" style={{ color: INK }}>{customer.nama}</div>
+        <div className="text-xs text-gray-400">{customer.daerah}</div>
+        {payment?.keterangan && <div className="text-xs text-gray-400 italic mt-0.5">"{payment.keterangan}"</div>}
+      </div>
+      <div className="text-xs font-mono font-semibold shrink-0" style={{ color: amountColor }}>
+        {isPaid ? rupiah(payment.jumlah) : (customer.harga ? rupiah(effectiveTagihan(customer)) : "-")}
+      </div>
+    </div>
+  );
+}
+
+function HistoryLists({ customers, payments }) {
+  const rows = useMemo(() => customers.map((c) => ({ customer: c, payment: payments.find((p) => p.customerId === c.id) })), [customers, payments]);
+  const hasKurang = (p) => p?.keterangan && p.keterangan.toLowerCase().includes("kurang");
+  const bayarLengkap = rows.filter((r) => r.payment && (r.payment.status === "cash" || r.payment.status === "transfer") && !hasKurang(r.payment));
+  const bayarKurang = rows.filter((r) => r.payment && (r.payment.status === "cash" || r.payment.status === "transfer") && hasKurang(r.payment));
+  const belumBayarList = rows.filter((r) => !r.payment || r.payment.status === "belum" || r.payment.status === "belum_dobel");
+  const didobelList = rows.filter((r) => r.payment && r.payment.status === "belum_dobel");
+
+  const sections = [
+    { title: "Bayar lengkap", color: TEAL, items: bayarLengkap },
+    { title: "Bayar dengan kekurangan", color: AMBER, items: bayarKurang },
+    { title: "Belum bayar", color: "#B0362A", items: belumBayarList },
+    { title: "Minta didobel bulan depan", color: NAVY, items: didobelList },
+  ];
+
+  return (
+    <>
+      {sections.map((s) => (
+        <div key={s.title} className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
+          <div className="font-semibold text-sm mb-1" style={{ color: s.color }}>{s.title} ({s.items.length})</div>
+          {s.items.length === 0 && <p className="text-xs text-gray-400">Tidak ada.</p>}
+          {s.items.map((r) => <HistoryRow key={r.customer.id} customer={r.customer} payment={r.payment} amountColor={s.color} />)}
+        </div>
+      ))}
+    </>
+  );
+}
+
 // ---------- Login ----------
 function LoginScreen({ error }) {
   const [email, setEmail] = useState("");
@@ -190,8 +235,8 @@ function CustomerForm({ onSave, onCancel, penagihList, initial }) {
             <input value={form.nama} onChange={(e) => setForm({ ...form, nama: e.target.value })} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none focus:border-gray-400" /></div>
           <div><label className="text-xs text-gray-500">Daerah</label>
             <input value={form.daerah} onChange={(e) => setForm({ ...form, daerah: e.target.value })} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none focus:border-gray-400" /></div>
-          <div><label className="text-xs text-gray-500">Harga per bulan (Rp)</label>
-            <input type="number" value={form.harga} onChange={(e) => setForm({ ...form, harga: e.target.value })} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none focus:border-gray-400" /></div>
+          <div><label className="text-xs text-gray-500">Harga per bulan (Rp) — opsional, sekadar acuan</label>
+            <input type="number" value={form.harga} onChange={(e) => setForm({ ...form, harga: e.target.value })} placeholder="Boleh dikosongkan" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none focus:border-gray-400" /></div>
           <div><label className="text-xs text-gray-500">Penagih</label>
             <select value={form.penagihId} onChange={(e) => setForm({ ...form, penagihId: e.target.value })} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none focus:border-gray-400">
               {penagihList.map((p) => <option key={p.uid} value={p.uid}>{p.nama}</option>)}
@@ -543,7 +588,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
               <StatCard icon={Wallet} label="Total Cash" value={rupiah(totalCash)} accent={TEAL} />
               <StatCard icon={Wallet} label="Total Transfer" value={rupiah(totalTransfer)} accent={NAVY} />
             </div>
-            <div className="rounded-2xl bg-white border border-gray-100 p-4">
+            <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
               <div className="font-semibold text-sm mb-3" style={{ color: NAVY }}>Rincian per Daerah — {monthLabel(viewMonth)}</div>
               {perDaerah.map((d) => (
                 <div key={d.daerah} className="flex items-center justify-between text-sm py-1.5 border-b border-gray-50 last:border-0">
@@ -553,6 +598,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                 </div>
               ))}
             </div>
+            <HistoryLists customers={customers} payments={payments} />
             <p className="text-xs text-gray-400 mt-3">Data bulan-bulan sebelumnya tersimpan permanen dan tidak pernah terhapus — setiap bulan baru otomatis mulai kosong tanpa menghapus riwayat.</p>
           </>
         )}
@@ -578,6 +624,7 @@ function PayRow({ customer, existing, onSave }) {
   const [jumlahInput, setJumlahInput] = useState(existing?.jumlah ? String(existing.jumlah) : "");
   const tagihan = effectiveTagihan(customer);
   const isLunas = status === "cash" || status === "transfer";
+  const kekurangan = isLunas && tagihan > 0 && jumlahInput ? tagihan - Number(jumlahInput) : 0;
 
   const submit = () => {
     if (!status) return;
@@ -623,6 +670,12 @@ function PayRow({ customer, existing, onSave }) {
           <label className="text-xs text-gray-500">Jumlah diterima (Rp)</label>
           <input type="number" value={jumlahInput} onChange={(e) => setJumlahInput(e.target.value)} placeholder="Tulis jumlah yang diterima"
             className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none focus:border-gray-400" />
+          {kekurangan > 0 && (
+            <button type="button" onClick={() => setKeterangan((k) => (k ? k.trim() + " " : "") + `Kurang ${rupiah(kekurangan)} dari harga standar ${rupiah(tagihan)}`)}
+              className="text-xs mt-1 font-medium" style={{ color: AMBER }}>
+              + Tambahkan kekurangan ({rupiah(kekurangan)}) ke keterangan
+            </button>
+          )}
         </div>
       )}
       <textarea value={keterangan} onChange={(e) => setKeterangan(e.target.value)} placeholder="Keterangan (opsional)" rows={2}
@@ -640,6 +693,9 @@ function PenagihView({ profile, uid, customers, onLogout }) {
   const payments = usePayments(month);
   const [query, setQuery] = useState("");
   const [daerahFilter, setDaerahFilter] = useState("semua");
+  const [tab, setTab] = useState("tagih");
+  const [viewMonth, setViewMonth] = useState(month);
+  const histPayments = usePayments(viewMonth);
   const mine = customers.filter((c) => c.penagihId === uid);
   const daerahList = useMemo(() => [...new Set(mine.map((c) => c.daerah).filter(Boolean))].sort(), [mine]);
   const filtered = mine
@@ -673,33 +729,55 @@ function PenagihView({ profile, uid, customers, onLogout }) {
           <div className="rounded-2xl bg-white/10 p-3"><div className="text-white/70 text-xs mb-1">Cash</div><div className="text-white font-mono font-semibold">{rupiah(mineCash)}</div></div>
           <div className="rounded-2xl bg-white/10 p-3"><div className="text-white/70 text-xs mb-1">Transfer</div><div className="text-white font-mono font-semibold">{rupiah(mineTransfer)}</div></div>
         </div>
+        <div className="flex gap-2 mt-4">
+          {[["tagih","Tagihan Bulan Ini"],["riwayat","Riwayat"]].map(([k,label]) => (
+            <button key={k} onClick={() => setTab(k)} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
+              style={tab === k ? { background: "white", color: NAVY } : { background: "rgba(255,255,255,0.12)", color: "white" }}>{label}</button>
+          ))}
+        </div>
       </div>
       <div className="p-5">
-        {belumTanpaKet.length > 0 && (
-          <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
-            <div className="font-semibold text-sm mb-1" style={{ color: AMBER }}>Belum bayar & belum ada keterangan ({belumTanpaKet.length})</div>
-            <p className="text-xs text-gray-400">Isi status/keterangan untuk pelanggan ini di daftar bawah.</p>
-          </div>
+        {tab === "tagih" && (
+          <>
+            {belumTanpaKet.length > 0 && (
+              <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
+                <div className="font-semibold text-sm mb-1" style={{ color: AMBER }}>Belum bayar & belum ada keterangan ({belumTanpaKet.length})</div>
+                <p className="text-xs text-gray-400">Isi status/keterangan untuk pelanggan ini di daftar bawah.</p>
+              </div>
+            )}
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 mb-3">
+              <Search size={15} color="#9CA3AF" />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Cari nama / daerah" className="flex-1 py-2.5 text-sm outline-none" />
+            </div>
+            {daerahList.length > 1 && (
+              <div className="flex gap-2 mb-3 overflow-x-auto">
+                <button onClick={() => setDaerahFilter("semua")} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border"
+                  style={daerahFilter === "semua" ? { background: NAVY, color: "white", borderColor: NAVY } : { borderColor: "#E5E7EB", color: "#6B7280" }}>Semua daerah</button>
+                {daerahList.map((d) => (
+                  <button key={d} onClick={() => setDaerahFilter(d)} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border"
+                    style={daerahFilter === d ? { background: NAVY, color: "white", borderColor: NAVY } : { borderColor: "#E5E7EB", color: "#6B7280" }}>{d}</button>
+                ))}
+              </div>
+            )}
+            <div className="space-y-2">
+              {filtered.map((c) => <PayRow key={c.id} customer={c} existing={paidMap.get(c.id)} onSave={save} />)}
+              {mine.length === 0 && <p className="text-xs text-gray-400 text-center py-10">Belum ada pelanggan yang ditugaskan ke Anda.</p>}
+              {mine.length > 0 && filtered.length === 0 && <p className="text-xs text-gray-400 text-center py-10">Tidak ada pelanggan ditemukan.</p>}
+            </div>
+          </>
         )}
-        <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 mb-3">
-          <Search size={15} color="#9CA3AF" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Cari nama / daerah" className="flex-1 py-2.5 text-sm outline-none" />
-        </div>
-        {daerahList.length > 1 && (
-          <div className="flex gap-2 mb-3 overflow-x-auto">
-            <button onClick={() => setDaerahFilter("semua")} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border"
-              style={daerahFilter === "semua" ? { background: NAVY, color: "white", borderColor: NAVY } : { borderColor: "#E5E7EB", color: "#6B7280" }}>Semua daerah</button>
-            {daerahList.map((d) => (
-              <button key={d} onClick={() => setDaerahFilter(d)} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border"
-                style={daerahFilter === d ? { background: NAVY, color: "white", borderColor: NAVY } : { borderColor: "#E5E7EB", color: "#6B7280" }}>{d}</button>
-            ))}
-          </div>
+        {tab === "riwayat" && (
+          <>
+            <div className="flex items-center gap-2 mb-4">
+              <History size={15} color={NAVY} />
+              <select value={viewMonth} onChange={(e) => setViewMonth(e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none">
+                {lastMonths(12).map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+              </select>
+            </div>
+            <HistoryLists customers={mine} payments={histPayments} />
+            <p className="text-xs text-gray-400 mt-3">Riwayat bulan-bulan sebelumnya tersimpan permanen dan tidak pernah terhapus.</p>
+          </>
         )}
-        <div className="space-y-2">
-          {filtered.map((c) => <PayRow key={c.id} customer={c} existing={paidMap.get(c.id)} onSave={save} />)}
-          {mine.length === 0 && <p className="text-xs text-gray-400 text-center py-10">Belum ada pelanggan yang ditugaskan ke Anda.</p>}
-          {mine.length > 0 && filtered.length === 0 && <p className="text-xs text-gray-400 text-center py-10">Tidak ada pelanggan ditemukan.</p>}
-        </div>
       </div>
     </div>
   );
