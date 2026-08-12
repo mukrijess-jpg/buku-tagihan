@@ -14,7 +14,6 @@ const TEAL = "#2A9D8F";
 const AMBER = "#E76F51";
 const CREAM = "#F6F7F5";
 const INK = "#1A1D23";
-const KOMISI_PER_PELANGGAN = 4000;
 
 const monthKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 const monthLabel = (key) => {
@@ -39,12 +38,12 @@ const rupiah = (n) => "Rp" + Number(n || 0).toLocaleString("id-ID");
 const STATUS_LABEL = {
   cash: { label: "Lunas · Cash", color: TEAL, bg: "#E6F4F1" },
   transfer: { label: "Lunas · Transfer", color: NAVY, bg: "#EAF0F6" },
-  lunas_dobel: { label: "Lunas · Bayar Dobel (2x Komisi)", color: "#B0362A", bg: "#FBEAE6" },
+  lunas_dobel: { label: "Lunas · Bayar Dobel", color: "#B0362A", bg: "#FBEAE6" },
   kurang: { label: "Bayar Kurang", color: "#B98900", bg: "#FFF6DD" },
   belum: { label: "Belum Bayar", color: AMBER, bg: "#FBEAE6" },
   belum_dobel: { label: "Belum Bayar (Dobel Bln Depan)", color: "#B0362A", bg: "#FBEAE6" },
 };
-// Status yang dianggap "lunas/berhasil ditarik" — dipakai untuk hitung komisi, total pendapatan, dst.
+// Status yang dianggap "lunas/berhasil ditarik" — dipakai untuk hitung total pendapatan, dst.
 const isLunasStatus = (status) => status === "cash" || status === "transfer" || status === "lunas_dobel";
 
 // ---------- Auth & profil ----------
@@ -604,11 +603,10 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
     const penagihLunas = lunas.filter((pay) => pay.penagihId === p.uid);
     const berhasil = penagihLunas.length;
     const dobelCount = penagihLunas.filter((pay) => pay.dobel).length;
-    const komisiUnits = penagihLunas.reduce((s, pay) => s + (pay.dobel ? 2 : 1), 0);
     const uang = penagihLunas.reduce((s, pay) => s + pay.jumlah, 0);
     const uangCash = payments.filter((pay) => pay.penagihId === p.uid && pay.status === "cash").reduce((s, pay) => s + pay.jumlah, 0);
     const uangTransfer = payments.filter((pay) => pay.penagihId === p.uid && pay.status === "transfer").reduce((s, pay) => s + pay.jumlah, 0);
-    return { ...p, ditugaskan: cs.length, berhasil, dobelCount, uang, uangCash, uangTransfer, komisi: komisiUnits * KOMISI_PER_PELANGGAN };
+    return { ...p, ditugaskan: cs.length, berhasil, dobelCount, uang, uangCash, uangTransfer };
   }), [penagihList, customers, lunas, payments]);
 
   const filtered = customers
@@ -637,7 +635,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
           <button onClick={onLogout} className="text-white/70"><LogOut size={18} /></button>
         </div>
         <div className="flex gap-2 mt-4 overflow-x-auto">
-          {[["ringkasan","Ringkasan"],["pelanggan","Pelanggan"],["penagih","Kinerja & Komisi"],["riwayat","Riwayat Bulan"]].map(([k,label]) => (
+          {[["ringkasan","Ringkasan"],["pelanggan","Pelanggan"],["penagih","Kinerja Penagih"],["riwayat","Riwayat Bulan"]].map(([k,label]) => (
             <button key={k} onClick={() => setTab(k)} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
               style={tab === k ? { background: "white", color: NAVY } : { background: "rgba(255,255,255,0.12)", color: "white" }}>{label}</button>
           ))}
@@ -656,7 +654,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
             <div className="flex gap-3 flex-wrap mb-3">
               <StatCard icon={Wallet} label="Total Cash" value={rupiah(totalCash)} accent={TEAL} sub={`${payments.filter((p) => p.status === "cash").length} pelanggan`} />
               <StatCard icon={Wallet} label="Total Transfer" value={rupiah(totalTransfer)} accent={NAVY} sub={`${payments.filter((p) => p.status === "transfer").length} pelanggan`} />
-              <StatCard icon={Wallet} label="Total Bayar Dobel" value={rupiah(totalDobel)} accent="#B0362A" sub={`${payments.filter((p) => p.status === "lunas_dobel").length} pelanggan · 2x komisi`} />
+              <StatCard icon={Wallet} label="Total Bayar Dobel" value={rupiah(totalDobel)} accent="#B0362A" sub={`${payments.filter((p) => p.status === "lunas_dobel").length} pelanggan`} />
             </div>
             <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
               <div className="font-semibold text-sm mb-3" style={{ color: NAVY }}>Rincian per Daerah</div>
@@ -759,7 +757,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                 {p.dobelCount > 0 && (
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span style={{ color: "#B0362A" }}>Termasuk bayar dobel</span>
-                    <span className="font-mono font-semibold" style={{ color: "#B0362A" }}>{p.dobelCount} pelanggan (2x komisi)</span>
+                    <span className="font-mono font-semibold" style={{ color: "#B0362A" }}>{p.dobelCount} pelanggan</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between text-xs mb-1">
@@ -773,10 +771,6 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                 <div className="flex items-center justify-between text-xs mb-1">
                   <span className="text-gray-400">Total uang dikumpulkan</span>
                   <span className="font-mono font-semibold" style={{ color: NAVY }}>{rupiah(p.uang)}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs pt-2 mt-2 border-t border-gray-50">
-                  <span className="font-medium" style={{ color: INK }}>Komisi (Rp{KOMISI_PER_PELANGGAN.toLocaleString("id-ID")}/pelanggan)</span>
-                  <span className="font-mono font-bold" style={{ color: AMBER }}>{rupiah(p.komisi)}</span>
                 </div>
               </div>
             ))}
@@ -819,7 +813,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                   <div>
                     <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: INK }}>
                       {p.customer?.nama || "-"}
-                      {p.dobel && <Badge color="#B0362A" bg="#FBEAE6">Dobel · 2x komisi</Badge>}
+                      {p.dobel && <Badge color="#B0362A" bg="#FBEAE6">Dobel</Badge>}
                     </div>
                     <div className="text-xs text-gray-400">{p.customer?.daerah}</div>
                   </div>
@@ -939,14 +933,14 @@ function PayRow({ customer, existing, onSave }) {
         <option value="">Pilih status bayar...</option>
         <option value="cash">Lunas · Cash</option>
         <option value="transfer">Lunas · Transfer</option>
-        {customer.dendaBulanDepan && <option value="lunas_dobel">Lunas · Bayar Dobel (2x Komisi)</option>}
+        {customer.dendaBulanDepan && <option value="lunas_dobel">Lunas · Bayar Dobel</option>}
         <option value="kurang">Bayar Kurang / Sebagian</option>
         <option value="belum">Belum Bayar</option>
         <option value="belum_dobel">Belum Bayar — Dobel Bulan Depan</option>
       </select>
       {status === "lunas_dobel" && (
         <p className="text-xs mb-2 p-2 rounded-lg" style={{ background: "#FBEAE6", color: "#B0362A" }}>
-          Isi jumlah total yang dibayar (bulan ini + tunggakan bulan lalu). Komisi bulan ini otomatis dicatat 2x (Rp8.000), dan tunggakan dianggap lunas.
+          Isi jumlah total yang dibayar (bulan ini + tunggakan bulan lalu). Tunggakan akan dianggap lunas.
         </p>
       )}
       {needsJumlah && (
@@ -992,12 +986,6 @@ function PenagihView({ profile, uid, customers, onLogout }) {
   const mintaDobelCount = mine.filter((c) => c.dendaBulanDepan).length;
   const bayarDobelCount = mine.filter((c) => paidMap.get(c.id)?.status === "lunas_dobel").length;
   const berhasil = mine.filter((c) => { const p = paidMap.get(c.id); return p && isLunasStatus(p.status); }).length;
-  // Unit komisi: pembayaran dobel (bulan ini + tunggakan bulan lalu sekaligus) dihitung 2 unit komisi.
-  const komisiUnits = mine.reduce((sum, c) => {
-    const p = paidMap.get(c.id);
-    if (p && isLunasStatus(p.status)) return sum + (p.dobel ? 2 : 1);
-    return sum;
-  }, 0);
   const mineCash = [...paidMap.values()].filter((p) => p.status === "cash").reduce((s, p) => s + p.jumlah, 0);
   const mineTransfer = [...paidMap.values()].filter((p) => p.status === "transfer").reduce((s, p) => s + p.jumlah, 0);
   const mineDobel = [...paidMap.values()].filter((p) => p.status === "lunas_dobel").reduce((s, p) => s + p.jumlah, 0);
@@ -1025,7 +1013,6 @@ function PenagihView({ profile, uid, customers, onLogout }) {
         <button onClick={() => setShowDetail((v) => !v)} className="w-full mt-3 flex items-center justify-between rounded-2xl bg-white/10 p-3">
           <div className="flex items-center gap-4 text-xs text-white/80">
             <span>Tercatat <b className="text-white font-mono">{sudahDicatat}/{mine.length}</b></span>
-            <span>Komisi <b className="text-white font-mono">{rupiah(komisiUnits * KOMISI_PER_PELANGGAN)}</b></span>
           </div>
           {showDetail ? <ChevronUp size={16} color="white" /> : <ChevronDown size={16} color="white" />}
         </button>
