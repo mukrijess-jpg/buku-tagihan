@@ -35,6 +35,38 @@ const lastMonths = (n = 6) => {
 };
 const rupiah = (n) => "Rp" + Number(n || 0).toLocaleString("id-ID");
 
+// Bangun teks otomatis "Nunggak Agustus" / "Nunggak Agustus dan September" / "Nunggak Agustus, September, dan Oktober"
+// dari daftar bulan (format YYYY-MM) yang belum lunas dobel.
+const nunggakLabel = (months) => {
+  if (!months || months.length === 0) return "";
+  const sorted = [...new Set(months)].sort();
+  const years = new Set(sorted.map((m) => m.split("-")[0]));
+  const names = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+  const parts = sorted.map((m) => {
+    const [y, mm] = m.split("-");
+    const nama = names[parseInt(mm, 10) - 1];
+    return years.size > 1 ? `${nama} ${y}` : nama;
+  });
+  if (parts.length === 1) return `Nunggak ${parts[0]}`;
+  if (parts.length === 2) return `Nunggak ${parts[0]} dan ${parts[1]}`;
+  return `Nunggak ${parts.slice(0, -1).join(", ")}, dan ${parts[parts.length - 1]}`;
+};
+// Tambahkan bulan `month` ke rantai tunggakan sesuai aturan:
+// - status "belum_dobel" selalu mulai/lanjut rantai (minta dobel bulan depan)
+// - status "belum" biasa hanya ikut menambah rantai kalau rantai sudah berjalan (sudah pernah minta dobel sebelumnya)
+// - status lunas dobel (isDobel) mereset rantai jadi lunas
+// - status bayar normal (cash/transfer/kurang) tanpa dobel TIDAK menghapus maupun menambah rantai — tunggakan lama tetap tercatat sampai dibayar dobel
+function nextNunggakState(customer, month, status, isDobel) {
+  const current = Array.isArray(customer.nunggakBulan) ? customer.nunggakBulan : [];
+  if (isDobel) return { nunggakBulan: [], dendaBulanDepan: false };
+  const isUnpaid = status === "belum" || status === "belum_dobel";
+  if (isUnpaid && (status === "belum_dobel" || current.length > 0)) {
+    const updated = current.includes(month) ? current : [...current, month];
+    return { nunggakBulan: updated, dendaBulanDepan: true };
+  }
+  return { nunggakBulan: current, dendaBulanDepan: customer.dendaBulanDepan || false };
+}
+
 const STATUS_LABEL = {
   cash: { label: "Lunas · Cash", color: TEAL, bg: "#E6F4F1" },
   transfer: { label: "Lunas · Transfer", color: NAVY, bg: "#EAF0F6" },
@@ -110,17 +142,26 @@ async function saveTunggakan(customerId, value) {
 async function savePaymentRecord({ month, customer, status, keterangan, jumlah, penagihUid, dobel }) {
   const payId = `${month}_${customer.id}`;
   const isDobel = status === "lunas_dobel" || !!dobel;
+  const { nunggakBulan, dendaBulanDepan } = nextNunggakState(customer, month, status, isDobel);
+
+  // Keterangan otomatis "Nunggak <bulan>" ditempel di depan, catatan manual penagih (kalau ada) ditambahkan setelahnya.
+  const isUnpaid = status === "belum" || status === "belum_dobel";
+  const autoLabel = isUnpaid ? nunggakLabel(nunggakBulan) : "";
+  const manual = (keterangan || "").trim();
+  const finalKeterangan = autoLabel ? (manual ? `${autoLabel} — ${manual}` : autoLabel) : manual;
+
   await setDoc(doc(db, "payments", payId), {
-    month, customerId: customer.id, status, keterangan: keterangan || "",
+    month, customerId: customer.id, status, keterangan: finalKeterangan,
     jumlah: jumlah || 0, penagihId: penagihUid, tanggal: new Date().toISOString(),
     dobel: isDobel,
   });
-  // Efek "dobel bulan depan"
-  if (status === "belum_dobel") {
-    await updateDoc(doc(db, "customers", customer.id), { dendaBulanDepan: true });
-  } else if (isDobel) {
-    // Tunggakan dobel baru dianggap lunas kalau memang dibayar sekaligus (dobel), bukan sekadar bayar normal.
-    await updateDoc(doc(db, "customers", customer.id), { dendaBulanDepan: false });
+
+  const current = Array.isArray(customer.nunggakBulan) ? customer.nunggakBulan : [];
+  const chainChanged = dendaBulanDepan !== (customer.dendaBulanDepan || false)
+    || nunggakBulan.length !== current.length
+    || nunggakBulan.some((m) => !current.includes(m));
+  if (chainChanged) {
+    await updateDoc(doc(db, "customers", customer.id), { dendaBulanDepan, nunggakBulan });
   }
 }
 
@@ -318,8 +359,8 @@ function LoginScreen({ error }) {
     <div className="min-h-screen flex items-center justify-center p-6" style={{ background: CREAM }}>
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: NAVY }}>
-            <ShieldCheck color="white" size={26} />
+          <div className="w-20 h-20 rounded-2xl mx-auto mb-4 flex items-center justify-center bg-white shadow-sm border border-gray-100 overflow-hidden">
+            <img src="/logo.png" alt="Logo" className="w-16 h-16 object-contain" />
           </div>
           <h1 className="text-2xl font-bold" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>Buku Tagihan</h1>
           <p className="text-sm text-gray-500 mt-1">Masuk dengan akun resmi Anda</p>
@@ -465,6 +506,7 @@ function BulkImportForm({ onCancel, onImported, penagihList }) {
             status: r.status,
             penagihId: uid || "",
             dendaBulanDepan: false,
+            nunggakBulan: [],
             tunggakan: 0,
             createdMonth: monthKey(),
           });
@@ -616,7 +658,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
 
   const saveCustomer = async (c) => {
     if (editing) await updateDoc(doc(db, "customers", editing.id), c);
-    else await addDoc(collection(db, "customers"), { ...c, dendaBulanDepan: false, tunggakan: c.tunggakan || 0, createdMonth: monthKey() });
+    else await addDoc(collection(db, "customers"), { ...c, dendaBulanDepan: false, nunggakBulan: [], tunggakan: c.tunggakan || 0, createdMonth: monthKey() });
     setShowForm(false); setEditing(null);
   };
   const deleteCustomer = async (c) => {
@@ -625,7 +667,17 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
   };
 
   return (
-    <div className="min-h-screen pb-6" style={{ background: CREAM }}>
+    <div className="min-h-screen pb-6 relative" style={{ background: CREAM }}>
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          backgroundImage: "url(/logo-watermark.png)",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center 40%",
+          backgroundSize: "min(80vw, 420px)",
+          opacity: 0.06,
+        }}
+      />
       <div className="px-5 pt-5 pb-4 sticky top-0 z-10" style={{ background: NAVY }}>
         <div className="flex items-center justify-between">
           <div>
@@ -642,7 +694,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
         </div>
       </div>
 
-      <div className="p-5">
+      <div className="p-5 relative z-10">
         {tab === "ringkasan" && (
           <>
             <div className="flex gap-3 flex-wrap mb-3">
@@ -727,7 +779,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: INK }}>{c.nama} <Pencil size={11} color="#C4C9D2" /><TunggakanEditor customer={c} /></div>
-                        <div className="text-xs text-gray-400">{c.daerah}{c.dendaBulanDepan && <span style={{ color: AMBER }}> · Dobel bulan depan</span>}</div>
+                        <div className="text-xs text-gray-400">{c.daerah}{(c.nunggakBulan?.length > 0 || c.dendaBulanDepan) && <span style={{ color: AMBER }}> · {c.nunggakBulan?.length > 0 ? nunggakLabel(c.nunggakBulan) : "Dobel bulan depan"}</span>}</div>
                       </div>
                       <div className="flex flex-col items-end gap-1">
                         {c.status !== "aktif" && <Badge color={AMBER} bg="#FBEAE6">{c.status === "isolir" ? "Isolir" : "Off"}</Badge>}
@@ -855,7 +907,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
               <div className="font-semibold text-sm mb-1" style={{ color: AMBER }}>Belum Bayar & Tanpa Keterangan ({belumBayarTanpaKet.length})</div>
               <p className="text-xs text-gray-400 mb-3">Bisa langsung dicatat di sini kalau ternyata pelanggan ini bayar belakangan — termasuk untuk bulan yang sudah lewat.</p>
               <div className="space-y-2">
-                {belumBayarTanpaKet.map((c) => <PayRow key={c.id} customer={c} existing={paidMap.get(c.id)} onSave={saveRiwayat} />)}
+                {belumBayarTanpaKet.map((c) => <PayRow key={c.id} customer={c} existing={paidMap.get(c.id)} onSave={saveRiwayat} month={viewMonth} />)}
                 {belumBayarTanpaKet.length === 0 && <p className="text-xs text-gray-400">Semua pelanggan yang belum bayar sudah punya keterangan.</p>}
               </div>
             </div>
@@ -885,12 +937,15 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
 }
 
 // ---------- Panel Penagih ----------
-function PayRow({ customer, existing, onSave }) {
+function PayRow({ customer, existing, onSave, month }) {
   const [editingRow, setEditingRow] = useState(!existing);
   const [status, setStatus] = useState(existing?.status || "");
   const [keterangan, setKeterangan] = useState(existing?.keterangan || "");
   const [jumlah, setJumlah] = useState(existing?.jumlah ? String(existing.jumlah) : "");
   const needsJumlah = status === "cash" || status === "transfer" || status === "kurang" || status === "lunas_dobel";
+  // Preview keterangan otomatis "Nunggak ..." berdasarkan rantai tunggakan pelanggan, dihitung ulang tiap status berubah.
+  const previewChain = month ? nextNunggakState(customer, month, status, status === "lunas_dobel") : null;
+  const previewLabel = previewChain && (status === "belum" || status === "belum_dobel") ? nunggakLabel(previewChain.nunggakBulan) : "";
 
   const submit = () => {
     if (!status) return;
@@ -928,7 +983,7 @@ function PayRow({ customer, existing, onSave }) {
         {customer.nama} {customer.status !== "aktif" && <Badge color={AMBER} bg="#FBEAE6">{customer.status}</Badge>}
         <TunggakanEditor customer={customer} />
       </div>
-      <div className="text-xs text-gray-400 mb-2">{customer.daerah}{customer.dendaBulanDepan && <span style={{ color: "#B0362A" }}> · Minta dobel (tunggakan bulan lalu)</span>}</div>
+      <div className="text-xs text-gray-400 mb-2">{customer.daerah}{(customer.nunggakBulan?.length > 0 || customer.dendaBulanDepan) && <span style={{ color: "#B0362A" }}> · {customer.nunggakBulan?.length > 0 ? nunggakLabel(customer.nunggakBulan) : "Minta dobel (tunggakan bulan lalu)"}</span>}</div>
       <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-2 outline-none">
         <option value="">Pilih status bayar...</option>
         <option value="cash">Lunas · Cash</option>
@@ -941,6 +996,11 @@ function PayRow({ customer, existing, onSave }) {
       {status === "lunas_dobel" && (
         <p className="text-xs mb-2 p-2 rounded-lg" style={{ background: "#FBEAE6", color: "#B0362A" }}>
           Isi jumlah total yang dibayar (bulan ini + tunggakan bulan lalu). Tunggakan akan dianggap lunas.
+        </p>
+      )}
+      {previewLabel && (
+        <p className="text-xs mb-2 p-2 rounded-lg" style={{ background: "#FBEAE6", color: "#B0362A" }}>
+          Keterangan otomatis: <b>{previewLabel}</b>
         </p>
       )}
       {needsJumlah && (
@@ -1001,7 +1061,17 @@ function PenagihView({ profile, uid, customers, onLogout }) {
   const save = (customer, status, keterangan, jumlah, dobel) => savePaymentRecord({ month: entryMonth, customer, status, keterangan, jumlah, penagihUid: uid, dobel });
 
   return (
-    <div className="min-h-screen pb-6" style={{ background: CREAM }}>
+    <div className="min-h-screen pb-6 relative" style={{ background: CREAM }}>
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          backgroundImage: "url(/logo-watermark.png)",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center 40%",
+          backgroundSize: "min(80vw, 420px)",
+          opacity: 0.06,
+        }}
+      />
       <div className="px-5 pt-5 pb-4 sticky top-0 z-10" style={{ background: NAVY }}>
         <div className="flex items-center justify-between">
           <div><div className="text-white/60 text-xs">Buku Tagihan</div><div className="text-white font-bold text-lg" style={{ fontFamily: "'Sora', sans-serif" }}>{profile.nama}</div></div>
@@ -1032,7 +1102,7 @@ function PenagihView({ profile, uid, customers, onLogout }) {
           </div>
         )}
       </div>
-      <div className="p-5">
+      <div className="p-5 relative z-10">
         {!isCurrentMonth && (
           <div className="rounded-2xl p-3 mb-3" style={{ background: "#EAF0F6" }}>
             <p className="text-xs" style={{ color: NAVY }}>Anda sedang mencatat pembayaran untuk <b>{monthLabel(entryMonth)}</b> — bukan bulan berjalan. Cocok untuk mencatat pelanggan yang baru bayar sekarang meski tagihan bulan itu sudah lewat.</p>
@@ -1071,7 +1141,7 @@ function PenagihView({ profile, uid, customers, onLogout }) {
           </div>
         )}
         <div className="space-y-2">
-          {filtered.map((c) => <PayRow key={c.id} customer={c} existing={paidMap.get(c.id)} onSave={save} />)}
+          {filtered.map((c) => <PayRow key={c.id} customer={c} existing={paidMap.get(c.id)} onSave={save} month={entryMonth} />)}
           {mine.length === 0 && <p className="text-xs text-gray-400 text-center py-10">Belum ada pelanggan yang ditugaskan ke Anda.</p>}
           {mine.length > 0 && filtered.length === 0 && <p className="text-xs text-gray-400 text-center py-10">Tidak ada pelanggan ditemukan.</p>}
         </div>
