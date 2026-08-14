@@ -359,7 +359,7 @@ function LoginScreen({ error }) {
     <div className="min-h-screen flex items-center justify-center p-6" style={{ background: CREAM }}>
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="w-20 h-20 rounded-2xl mx-auto mb-4 flex items-center justify-center bg-white shadow-sm border border-gray-100 overflow-hidden">
+          <div className="w-20 h-20 rounded-2xl mx-auto mb-4 flex items-center justify-center shadow-sm overflow-hidden" style={{ background: NAVY }}>
             <img src="/logo.png" alt="Logo" className="w-16 h-16 object-contain" />
           </div>
           <h1 className="text-2xl font-bold" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>Buku Tagihan</h1>
@@ -678,15 +678,23 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
           opacity: 0.06,
         }}
       />
-      <div className="px-5 pt-5 pb-4 sticky top-0 z-10" style={{ background: NAVY }}>
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-white/60 text-xs">Panel Admin · {profile.nama}</div>
-            <div className="text-white font-bold text-lg" style={{ fontFamily: "'Sora', sans-serif" }}>Buku Tagihan</div>
+      <div className="px-5 pt-5 pb-4 sticky top-0 z-10 relative overflow-hidden" style={{ background: NAVY }}>
+        <img
+          src="/logo-small.png"
+          alt=""
+          className="pointer-events-none absolute -right-6 -top-8 w-36 h-36 object-contain opacity-15"
+        />
+        <div className="flex items-center justify-between relative z-10">
+          <div className="flex items-center gap-3">
+            <img src="/logo-small.png" alt="Logo" className="w-9 h-9 object-contain" />
+            <div>
+              <div className="text-white/60 text-xs">Panel Admin · {profile.nama}</div>
+              <div className="text-white font-bold text-lg" style={{ fontFamily: "'Sora', sans-serif" }}>Buku Tagihan</div>
+            </div>
           </div>
           <button onClick={onLogout} className="text-white/70"><LogOut size={18} /></button>
         </div>
-        <div className="flex gap-2 mt-4 overflow-x-auto">
+        <div className="flex gap-2 mt-4 overflow-x-auto relative z-10">
           {[["ringkasan","Ringkasan"],["pelanggan","Pelanggan"],["penagih","Kinerja Penagih"],["riwayat","Riwayat Bulan"]].map(([k,label]) => (
             <button key={k} onClick={() => setTab(k)} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
               style={tab === k ? { background: "white", color: NAVY } : { background: "rgba(255,255,255,0.12)", color: "white" }}>{label}</button>
@@ -1072,15 +1080,23 @@ function PenagihView({ profile, uid, customers, onLogout }) {
           opacity: 0.06,
         }}
       />
-      <div className="px-5 pt-5 pb-4 sticky top-0 z-10" style={{ background: NAVY }}>
-        <div className="flex items-center justify-between">
-          <div><div className="text-white/60 text-xs">Buku Tagihan</div><div className="text-white font-bold text-lg" style={{ fontFamily: "'Sora', sans-serif" }}>{profile.nama}</div></div>
+      <div className="px-5 pt-5 pb-4 sticky top-0 z-10 relative overflow-hidden" style={{ background: NAVY }}>
+        <img
+          src="/logo-small.png"
+          alt=""
+          className="pointer-events-none absolute -right-6 -top-8 w-36 h-36 object-contain opacity-15"
+        />
+        <div className="flex items-center justify-between relative z-10">
+          <div className="flex items-center gap-3">
+            <img src="/logo-small.png" alt="Logo" className="w-9 h-9 object-contain" />
+            <div><div className="text-white/60 text-xs">Buku Tagihan</div><div className="text-white font-bold text-lg" style={{ fontFamily: "'Sora', sans-serif" }}>{profile.nama}</div></div>
+          </div>
           <button onClick={onLogout} className="text-white/70"><LogOut size={18} /></button>
         </div>
-        <select value={entryMonth} onChange={(e) => setEntryMonth(e.target.value)} className="w-full mt-3 border border-white/20 bg-white/10 text-white rounded-lg px-3 py-2 text-sm outline-none">
+        <select value={entryMonth} onChange={(e) => setEntryMonth(e.target.value)} className="w-full mt-3 border border-white/20 bg-white/10 text-white rounded-lg px-3 py-2 text-sm outline-none relative z-10">
           {lastMonths(6).map((m) => <option key={m} value={m} style={{ color: INK }}>{monthLabel(m)}{m === monthKey() ? " (bulan ini)" : ""}</option>)}
         </select>
-        <button onClick={() => setShowDetail((v) => !v)} className="w-full mt-3 flex items-center justify-between rounded-2xl bg-white/10 p-3">
+        <button onClick={() => setShowDetail((v) => !v)} className="w-full mt-3 flex items-center justify-between rounded-2xl bg-white/10 p-3 relative z-10">
           <div className="flex items-center gap-4 text-xs text-white/80">
             <span>Tercatat <b className="text-white font-mono">{sudahDicatat}/{mine.length}</b></span>
           </div>
