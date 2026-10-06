@@ -35,6 +35,23 @@ const lastMonths = (n = 6) => {
 };
 const rupiah = (n) => "Rp" + Number(n || 0).toLocaleString("id-ID");
 
+// ---- Tanggal bayar (format simpan: "YYYY-MM-DD", zona waktu lokal) ----
+const BULAN_PENDEK = ["Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"];
+const localDateStr = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const todayStr = () => localDateStr(new Date());
+const fmtTgl = (str) => {
+  if (!str) return "-";
+  const [y, m, d] = str.split("-");
+  return `${parseInt(d, 10)} ${BULAN_PENDEK[parseInt(m, 10) - 1]} ${y}`;
+};
+// Tanggal pembayaran sebuah catatan. Catatan lama (sebelum ada fitur tanggal bayar) memakai tanggal saat dicatat.
+const payDate = (p) => p?.tglBayar || (p?.tanggal ? localDateStr(new Date(p.tanggal)) : "");
+// Status yang berarti pelanggan sudah mengeluarkan uang (lunas maupun kurang)
+const PAID_STATUSES = ["cash", "transfer", "lunas_dobel", "kurang"];
+// Kekurangan bayar sebuah catatan "kurang". Catatan lama tanpa data tagihan -> null (belum diisi).
+const kekuranganOf = (p) => (p?.status === "kurang" && p.tagihan > 0 ? Math.max(0, p.tagihan - (p.jumlah || 0)) : null);
+const pctText = (n, total) => (total ? ((n / total) * 100).toLocaleString("id-ID", { maximumFractionDigits: 1 }) : "0") + "%";
+
 // Bangun teks otomatis "Nunggak Agustus" / "Nunggak Agustus dan September" / "Nunggak Agustus, September, dan Oktober"
 // dari daftar bulan (format YYYY-MM) yang belum lunas dobel.
 const nunggakLabel = (months) => {
@@ -139,7 +156,7 @@ async function saveTunggakan(customerId, value) {
   await updateDoc(doc(db, "customers", customerId), { tunggakan: Math.max(0, Number(value) || 0) });
 }
 
-async function savePaymentRecord({ month, customer, status, keterangan, jumlah, penagihUid, dobel }) {
+async function savePaymentRecord({ month, customer, status, keterangan, jumlah, penagihUid, dobel, tagihan, tglBayar }) {
   const payId = `${month}_${customer.id}`;
   const isDobel = status === "lunas_dobel" || !!dobel;
   const { nunggakBulan, dendaBulanDepan } = nextNunggakState(customer, month, status, isDobel);
@@ -150,10 +167,18 @@ async function savePaymentRecord({ month, customer, status, keterangan, jumlah, 
   const manual = (keterangan || "").trim();
   const finalKeterangan = autoLabel ? (manual ? `${autoLabel} — ${manual}` : autoLabel) : manual;
 
+  // Bayar kurang: simpan total tagihan seharusnya, kekurangan = tagihan - yang dibayar.
+  const isKurang = status === "kurang";
+  const tagihanFinal = isKurang ? Number(tagihan) || 0 : 0;
+  const kekurangan = isKurang ? Math.max(0, tagihanFinal - (jumlah || 0)) : 0;
+  // Tanggal bayar hanya untuk status yang benar-benar ada uang masuk; default hari ini kalau tidak diisi.
+  const tglFinal = PAID_STATUSES.includes(status) ? (tglBayar || todayStr()) : "";
+
   await setDoc(doc(db, "payments", payId), {
     month, customerId: customer.id, status, keterangan: finalKeterangan,
     jumlah: jumlah || 0, penagihId: penagihUid, tanggal: new Date().toISOString(),
     dobel: isDobel,
+    tagihan: tagihanFinal, kekurangan, tglBayar: tglFinal,
   });
 
   const current = Array.isArray(customer.nunggakBulan) ? customer.nunggakBulan : [];
@@ -333,6 +358,35 @@ function StatCard({ icon: Icon, label, value, sub, accent }) {
       </div>
       <div className="text-xl font-bold" style={{ color: NAVY, fontFamily: "'IBM Plex Mono', monospace" }}>{value}</div>
       {sub && <div className="text-xs text-gray-400 mt-1">{sub}</div>}
+    </div>
+  );
+}
+// Persentase sudah bayar / bayar kurang / belum bayar (dasar: pelanggan aktif)
+function PercentCard({ title, lunas, kurang, belum }) {
+  const total = lunas + kurang + belum;
+  const segs = [
+    ["Sudah lunas", lunas, TEAL],
+    ["Bayar kurang", kurang, "#B98900"],
+    ["Belum bayar", belum, AMBER],
+  ];
+  return (
+    <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
+      <div className="flex items-center justify-between mb-3">
+        <div className="font-semibold text-sm" style={{ color: NAVY }}>{title}</div>
+        <div className="text-xs text-gray-400">{total} pelanggan aktif</div>
+      </div>
+      <div className="flex h-3 rounded-full overflow-hidden bg-gray-100 mb-3">
+        {total > 0 && segs.map(([l, n, c]) => n > 0 && <div key={l} style={{ width: `${(n / total) * 100}%`, background: c }} />)}
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {segs.map(([l, n, c]) => (
+          <div key={l}>
+            <div className="text-lg font-bold" style={{ color: c, fontFamily: "'IBM Plex Mono', monospace" }}>{pctText(n, total)}</div>
+            <div className="text-xs text-gray-500">{l}</div>
+            <div className="text-xs text-gray-400">{n} pelanggan</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -616,6 +670,13 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
   const totalTransfer = payments.filter((p) => p.status === "transfer").reduce((s, p) => s + p.jumlah, 0);
   const totalDobel = payments.filter((p) => p.status === "lunas_dobel").reduce((s, p) => s + p.jumlah, 0);
   const totalKurang = payments.filter((p) => p.status === "kurang").reduce((s, p) => s + p.jumlah, 0);
+  const totalKekurangan = payments.filter((p) => p.status === "kurang").reduce((s, p) => s + (kekuranganOf(p) || 0), 0);
+  const kurangTanpaData = payments.filter((p) => p.status === "kurang" && kekuranganOf(p) === null).length;
+  // Persentase sudah bayar / kurang / belum — dasar: pelanggan aktif bulan itu
+  const aktifMonth = customersForMonth.filter((c) => c.status === "aktif");
+  const pctLunas = aktifMonth.filter((c) => isLunasStatus(paidMap.get(c.id)?.status)).length;
+  const pctKurang = aktifMonth.filter((c) => paidMap.get(c.id)?.status === "kurang").length;
+  const pctBelum = aktifMonth.length - pctLunas - pctKurang;
   const isolirCount = customersForMonth.filter((c) => c.status === "isolir" || c.status === "off").length;
   const aktifCount = customersForMonth.filter((c) => c.status === "aktif").length;
   const belumBayar = customersForMonth.filter((c) => c.status === "aktif" && !paidMap.has(c.id));
@@ -630,8 +691,25 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
   const lunasList = useMemo(() => lunas.map(withCustomer), [lunas, customers]);
   const bayarKurangList = useMemo(() => payments.filter((p) => p.status === "kurang").map(withCustomer), [payments, customers]);
   const dobelList = useMemo(() => payments.filter((p) => p.status === "belum_dobel").map(withCustomer), [payments, customers]);
-  const saveRiwayat = (customer, status, keterangan, jumlah, dobel) =>
-    savePaymentRecord({ month: viewMonth, customer, status, keterangan, jumlah, penagihUid: customer.penagihId || "", dobel });
+  // Monitoring tanggal bayar: semua pelanggan yang sudah mengeluarkan uang (lunas + kurang), dikelompokkan per tanggal (terbaru di atas)
+  const [monitorQuery, setMonitorQuery] = useState("");
+  const monitorGroups = useMemo(() => {
+    const items = payments
+      .filter((p) => PAID_STATUSES.includes(p.status))
+      .map(withCustomer)
+      .filter((p) => (`${p.customer?.nama || ""} ${p.customer?.daerah || ""}`).toLowerCase().includes(monitorQuery.toLowerCase()));
+    const map = new Map();
+    items.forEach((p) => {
+      const d = payDate(p) || "-";
+      if (!map.has(d)) map.set(d, []);
+      map.get(d).push(p);
+    });
+    return [...map.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([tgl, list]) => ({ tgl, list: list.sort((x, y) => (x.customer?.nama || "").localeCompare(y.customer?.nama || "")), total: list.reduce((sum, p) => sum + (p.jumlah || 0), 0) }));
+  }, [payments, customers, monitorQuery]);
+  const saveRiwayat = (customer, status, keterangan, jumlah, dobel, extra) =>
+    savePaymentRecord({ month: viewMonth, customer, status, keterangan, jumlah, penagihUid: customer.penagihId || "", dobel, ...extra });
 
   const perDaerah = useMemo(() => [...new Set(customersForMonth.map((c) => c.daerah).filter(Boolean))].sort().map((d) => {
     const cs = customersForMonth.filter((c) => c.daerah === d && c.status === "aktif");
@@ -695,7 +773,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
           <button onClick={onLogout} className="text-white/70"><LogOut size={18} /></button>
         </div>
         <div className="flex gap-2 mt-4 overflow-x-auto relative z-10">
-          {[["ringkasan","Ringkasan"],["pelanggan","Pelanggan"],["penagih","Kinerja Penagih"],["riwayat","Riwayat Bulan"]].map(([k,label]) => (
+          {[["ringkasan","Ringkasan"],["monitoring","Tgl Bayar"],["pelanggan","Pelanggan"],["penagih","Kinerja Penagih"],["riwayat","Riwayat Bulan"]].map(([k,label]) => (
             <button key={k} onClick={() => setTab(k)} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
               style={tab === k ? { background: "white", color: NAVY } : { background: "rgba(255,255,255,0.12)", color: "white" }}>{label}</button>
           ))}
@@ -715,6 +793,25 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
               <StatCard icon={Wallet} label="Total Cash" value={rupiah(totalCash)} accent={TEAL} sub={`${payments.filter((p) => p.status === "cash").length} pelanggan`} />
               <StatCard icon={Wallet} label="Total Transfer" value={rupiah(totalTransfer)} accent={NAVY} sub={`${payments.filter((p) => p.status === "transfer").length} pelanggan`} />
               <StatCard icon={Wallet} label="Total Bayar Dobel" value={rupiah(totalDobel)} accent="#B0362A" sub={`${payments.filter((p) => p.status === "lunas_dobel").length} pelanggan`} />
+              <StatCard icon={Wallet} label="Total Kekurangan" value={rupiah(totalKekurangan)} accent="#B98900" sub={`${bayarKurangList.length} pelanggan bayar kurang`} />
+            </div>
+            <PercentCard title={`Persentase Pembayaran ${monthLabel(viewMonth)}`} lunas={pctLunas} kurang={pctKurang} belum={pctBelum} />
+            <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
+              <div className="font-semibold text-sm mb-1" style={{ color: "#B98900" }}>Bayar Kurang ({bayarKurangList.length})</div>
+              <p className="text-xs text-gray-400 mb-3">Siapa yang bayar kurang, berapa kurangnya, dan kapan bayar.</p>
+              {bayarKurangList.map((p) => (
+                <div key={p.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                  <div>
+                    <div className="text-sm font-medium" style={{ color: INK }}>{p.customer?.nama || "-"}</div>
+                    <div className="text-xs text-gray-400">{p.customer?.daerah} · Bayar {fmtTgl(payDate(p))}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs font-mono font-semibold" style={{ color: "#B98900" }}>{kekuranganOf(p) !== null ? `Kurang ${rupiah(kekuranganOf(p))}` : "Kurang ?"}</div>
+                    <div className="text-xs text-gray-400">Dibayar {rupiah(p.jumlah)}</div>
+                  </div>
+                </div>
+              ))}
+              {bayarKurangList.length === 0 && <p className="text-xs text-gray-400">Tidak ada pelanggan yang bayar kurang.</p>}
             </div>
             <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
               <div className="font-semibold text-sm mb-3" style={{ color: NAVY }}>Rincian per Daerah</div>
@@ -722,7 +819,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                 {perDaerah.map((d) => (
                   <div key={d.daerah} className="flex items-center justify-between text-sm py-1.5 border-b border-gray-50 last:border-0">
                     <span style={{ color: INK }}>{d.daerah}</span>
-                    <span className="text-xs text-gray-400">{d.sudahBayar}/{d.total} bayar</span>
+                    <span className="text-xs text-gray-400">{d.sudahBayar}/{d.total} bayar · {pctText(d.sudahBayar, d.total)}</span>
                     <span className="font-mono text-xs font-semibold" style={{ color: TEAL }}>{rupiah(d.uang)}</span>
                   </div>
                 ))}
@@ -750,6 +847,48 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
               })}
               {belumBayarTanpaKet.length === 0 && <p className="text-xs text-gray-400">Semua pelanggan yang belum bayar sudah punya keterangan.</p>}
             </div>
+          </>
+        )}
+
+        {tab === "monitoring" && (
+          <>
+            <div className="flex items-center gap-2 mb-4">
+              <History size={15} color={NAVY} />
+              <select value={viewMonth} onChange={(e) => setViewMonth(e.target.value)} className="border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none">
+                {lastMonths(12).map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+              </select>
+            </div>
+            <PercentCard title={`Persentase Pembayaran ${monthLabel(viewMonth)}`} lunas={pctLunas} kurang={pctKurang} belum={pctBelum} />
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 mb-3">
+              <Search size={15} color="#9CA3AF" />
+              <input value={monitorQuery} onChange={(e) => setMonitorQuery(e.target.value)} placeholder="Cari nama / daerah" className="flex-1 py-2.5 text-sm outline-none" />
+            </div>
+            {monitorGroups.map((g) => (
+              <div key={g.tgl} className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-semibold text-sm" style={{ color: NAVY }}>{g.tgl === "-" ? "Tanggal tidak tercatat" : fmtTgl(g.tgl)}</div>
+                  <div className="text-xs text-gray-400">{g.list.length} pelanggan · <span className="font-mono font-semibold" style={{ color: TEAL }}>{rupiah(g.total)}</span></div>
+                </div>
+                {g.list.map((p) => {
+                  const st = STATUS_LABEL[p.status];
+                  const kurangNominal = kekuranganOf(p);
+                  return (
+                    <div key={p.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                      <div>
+                        <div className="text-sm font-medium" style={{ color: INK }}>{p.customer?.nama || "-"}</div>
+                        <div className="text-xs text-gray-400">{p.customer?.daerah}</div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <div className="text-xs font-mono font-semibold" style={{ color: NAVY }}>{rupiah(p.jumlah)}</div>
+                        {st && <Badge color={st.color} bg={st.bg}>{st.label}</Badge>}
+                        {p.status === "kurang" && <div className="text-xs font-semibold" style={{ color: "#B98900" }}>{kurangNominal !== null ? `Kurang ${rupiah(kurangNominal)}` : "Kekurangan belum diisi"}</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+            {monitorGroups.length === 0 && <p className="text-xs text-gray-400 text-center py-10">Belum ada pembayaran tercatat untuk {monthLabel(viewMonth)}.</p>}
           </>
         )}
 
@@ -792,6 +931,8 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                       <div className="flex flex-col items-end gap-1">
                         {c.status !== "aktif" && <Badge color={AMBER} bg="#FBEAE6">{c.status === "isolir" ? "Isolir" : "Off"}</Badge>}
                         {st && <Badge color={st.color} bg={st.bg}>{st.label}</Badge>}
+                        {pay?.status === "kurang" && kekuranganOf(pay) !== null && <span className="text-xs font-semibold" style={{ color: "#B98900" }}>Kurang {rupiah(kekuranganOf(pay))}</span>}
+                        {pay && PAID_STATUSES.includes(pay.status) && <span className="text-xs text-gray-400">Bayar {fmtTgl(payDate(pay))}</span>}
                       </div>
                     </div>
                   </button>
@@ -812,7 +953,11 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                 </div>
                 <div className="flex items-center justify-between text-xs mb-1">
                   <span className="text-gray-400">Berhasil ditarik bulan ini</span>
-                  <span className="font-mono font-semibold" style={{ color: TEAL }}>{p.berhasil} pelanggan</span>
+                  <span className="font-mono font-semibold" style={{ color: TEAL }}>{p.berhasil} pelanggan · {pctText(p.berhasil, p.ditugaskan)}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span className="text-gray-400">Belum membayar</span>
+                  <span className="font-mono font-semibold" style={{ color: AMBER }}>{Math.max(0, p.ditugaskan - p.berhasil)} pelanggan · {pctText(Math.max(0, p.ditugaskan - p.berhasil), p.ditugaskan)}</span>
                 </div>
                 {p.dobelCount > 0 && (
                   <div className="flex items-center justify-between text-xs mb-1">
@@ -853,14 +998,16 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
               <StatCard icon={Wallet} label="Total Cash" value={rupiah(totalCash)} accent={TEAL} />
               <StatCard icon={Wallet} label="Total Transfer" value={rupiah(totalTransfer)} accent={NAVY} />
               <StatCard icon={Wallet} label="Total Bayar Dobel" value={rupiah(totalDobel)} accent="#B0362A" />
-              <StatCard icon={Wallet} label="Total Kurang Bayar" value={rupiah(totalKurang)} accent="#B98900" />
+              <StatCard icon={Wallet} label="Dibayar (status kurang)" value={rupiah(totalKurang)} accent="#B98900" />
+              <StatCard icon={Wallet} label="Total Kekurangan" value={rupiah(totalKekurangan)} accent="#B98900" sub={kurangTanpaData > 0 ? `${kurangTanpaData} catatan lama belum diisi tagihannya` : undefined} />
             </div>
+            <PercentCard title={`Persentase Pembayaran ${monthLabel(viewMonth)}`} lunas={pctLunas} kurang={pctKurang} belum={pctBelum} />
             <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
               <div className="font-semibold text-sm mb-3" style={{ color: NAVY }}>Rincian per Daerah — {monthLabel(viewMonth)}</div>
               {perDaerah.map((d) => (
                 <div key={d.daerah} className="flex items-center justify-between text-sm py-1.5 border-b border-gray-50 last:border-0">
                   <span style={{ color: INK }}>{d.daerah}</span>
-                  <span className="text-xs text-gray-400">{d.sudahBayar}/{d.total} bayar</span>
+                  <span className="text-xs text-gray-400">{d.sudahBayar}/{d.total} bayar · {pctText(d.sudahBayar, d.total)}</span>
                   <span className="font-mono text-xs font-semibold" style={{ color: TEAL }}>{rupiah(d.uang)}</span>
                 </div>
               ))}
@@ -875,7 +1022,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                       {p.customer?.nama || "-"}
                       {p.dobel && <Badge color="#B0362A" bg="#FBEAE6">Dobel</Badge>}
                     </div>
-                    <div className="text-xs text-gray-400">{p.customer?.daerah}</div>
+                    <div className="text-xs text-gray-400">{p.customer?.daerah} · Bayar {fmtTgl(payDate(p))}</div>
                   </div>
                   <div className="text-right">
                     <div className="text-xs font-mono font-semibold" style={{ color: TEAL }}>{rupiah(p.jumlah)}</div>
@@ -893,9 +1040,12 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
                 <div key={p.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
                   <div>
                     <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: INK }}>{p.customer?.nama || "-"}{p.customer && <TunggakanEditor customer={p.customer} />}</div>
-                    <div className="text-xs text-gray-400">{p.customer?.daerah}{p.keterangan && <> · "{p.keterangan}"</>}</div>
+                    <div className="text-xs text-gray-400">{p.customer?.daerah} · Bayar {fmtTgl(payDate(p))}{p.keterangan && <> · "{p.keterangan}"</>}</div>
                   </div>
-                  <div className="text-xs font-mono font-semibold" style={{ color: "#B98900" }}>{rupiah(p.jumlah)}</div>
+                  <div className="text-right">
+                    <div className="text-xs font-mono font-semibold" style={{ color: "#B98900" }}>{kekuranganOf(p) !== null ? `Kurang ${rupiah(kekuranganOf(p))}` : "Kurang ?"}</div>
+                    <div className="text-xs text-gray-400">Dibayar {rupiah(p.jumlah)}</div>
+                  </div>
                 </div>
               ))}
               {bayarKurangList.length === 0 && <p className="text-xs text-gray-400">Tidak ada pelanggan yang bayar kurang bulan ini.</p>}
@@ -950,7 +1100,13 @@ function PayRow({ customer, existing, onSave, month }) {
   const [status, setStatus] = useState(existing?.status || "");
   const [keterangan, setKeterangan] = useState(existing?.keterangan || "");
   const [jumlah, setJumlah] = useState(existing?.jumlah ? String(existing.jumlah) : "");
+  const [tagihan, setTagihan] = useState(existing?.tagihan ? String(existing.tagihan) : "");
+  const [tglBayar, setTglBayar] = useState(payDate(existing) || todayStr());
   const needsJumlah = status === "cash" || status === "transfer" || status === "kurang" || status === "lunas_dobel";
+  const isKurang = status === "kurang";
+  const kekuranganPreview = isKurang ? Math.max(0, (Number(tagihan) || 0) - (Number(jumlah) || 0)) : 0;
+  // Bayar kurang wajib mengisi total tagihan, dan tagihan harus lebih besar dari yang dibayar.
+  const kurangInvalid = isKurang && (!(Number(tagihan) > 0) || Number(tagihan) <= (Number(jumlah) || 0));
   // Preview keterangan otomatis "Nunggak ..." berdasarkan rantai tunggakan pelanggan, dihitung ulang tiap status berubah.
   const previewChain = month ? nextNunggakState(customer, month, status, status === "lunas_dobel") : null;
   const previewLabel = previewChain && (status === "belum" || status === "belum_dobel") ? nunggakLabel(previewChain.nunggakBulan) : "";
@@ -958,7 +1114,10 @@ function PayRow({ customer, existing, onSave, month }) {
   const submit = () => {
     if (!status) return;
     const jml = needsJumlah ? Number(jumlah) || 0 : 0;
-    onSave(customer, status, keterangan, jml);
+    onSave(customer, status, keterangan, jml, false, {
+      tagihan: isKurang ? Number(tagihan) || 0 : 0,
+      tglBayar: needsJumlah ? tglBayar : "",
+    });
     setEditingRow(false);
   };
 
@@ -973,7 +1132,13 @@ function PayRow({ customer, existing, onSave, month }) {
               {isPaid && <CheckCircle2 size={14} color={TEAL} />}
               {customer.nama}<TunggakanEditor customer={customer} />
             </div>
-            <div className="text-xs text-gray-400">{customer.daerah}{existing.jumlah > 0 && <> · {rupiah(existing.jumlah)}</>}</div>
+            <div className="text-xs text-gray-400">{customer.daerah}{existing.jumlah > 0 && <> · Dibayar {rupiah(existing.jumlah)}</>}</div>
+            {existing.status === "kurang" && (
+              kekuranganOf(existing) !== null
+                ? <div className="text-xs font-semibold mt-1" style={{ color: "#B98900" }}>Kurang {rupiah(kekuranganOf(existing))} dari tagihan {rupiah(existing.tagihan)}</div>
+                : <div className="text-xs mt-1" style={{ color: "#B98900" }}>Kekurangan belum diisi — tekan Ubah untuk mengisi total tagihan</div>
+            )}
+            {PAID_STATUSES.includes(existing.status) && <div className="text-xs text-gray-400 mt-0.5">Tgl bayar: {fmtTgl(payDate(existing))}</div>}
             {existing.keterangan && <div className="text-xs text-gray-400 italic mt-1">"{existing.keterangan}"</div>}
           </div>
           <div className="flex flex-col items-end gap-1">
@@ -1017,11 +1182,31 @@ function PayRow({ customer, existing, onSave, month }) {
           placeholder="Jumlah dibayar (contoh: 110000 atau 110.000)"
           className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-2 outline-none" />
       )}
+      {isKurang && (
+        <>
+          <input type="text" inputMode="numeric" value={tagihan}
+            onChange={(e) => setTagihan(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="Total tagihan seharusnya (contoh: 150000)"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-2 outline-none" />
+          {Number(tagihan) > 0 && (
+            kurangInvalid
+              ? <p className="text-xs mb-2 p-2 rounded-lg" style={{ background: "#FBEAE6", color: "#B0362A" }}>Total tagihan harus lebih besar dari jumlah yang dibayar.</p>
+              : <p className="text-xs mb-2 p-2 rounded-lg" style={{ background: "#FFF6DD", color: "#B98900" }}>Kekurangan: <b>{rupiah(kekuranganPreview)}</b></p>
+          )}
+        </>
+      )}
+      {needsJumlah && (
+        <div className="mb-2">
+          <label className="text-xs text-gray-500">Tanggal bayar</label>
+          <input type="date" value={tglBayar} onChange={(e) => setTglBayar(e.target.value)}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 outline-none" />
+        </div>
+      )}
       <textarea value={keterangan} onChange={(e) => setKeterangan(e.target.value)} placeholder="Keterangan (opsional)" rows={2}
         className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-2 outline-none resize-none" />
       <div className="flex gap-2">
         {existing && <button onClick={() => setEditingRow(false)} className="flex-1 text-xs font-medium py-2 rounded-lg border border-gray-200 text-gray-500">Batal</button>}
-        <button onClick={submit} disabled={!status || (needsJumlah && !jumlah)} className="flex-1 text-xs font-semibold py-2 rounded-lg text-white disabled:opacity-40" style={{ background: TEAL }}>Simpan</button>
+        <button onClick={submit} disabled={!status || (needsJumlah && (!jumlah || !tglBayar)) || kurangInvalid} className="flex-1 text-xs font-semibold py-2 rounded-lg text-white disabled:opacity-40" style={{ background: TEAL }}>Simpan</button>
       </div>
     </div>
   );
@@ -1045,6 +1230,7 @@ function PenagihView({ profile, uid, customers, onLogout }) {
       if (bayarFilter === "semua") return true;
       if (bayarFilter === "sudah") return isLunasStatus(paidMap.get(c.id)?.status);
       if (bayarFilter === "belum") return !isLunasStatus(paidMap.get(c.id)?.status);
+      if (bayarFilter === "kurang") return paidMap.get(c.id)?.status === "kurang";
       if (bayarFilter === "dobel") return !!c.dendaBulanDepan;
       if (bayarFilter === "dobel_lunas") return paidMap.get(c.id)?.status === "lunas_dobel";
       return true;
@@ -1058,6 +1244,9 @@ function PenagihView({ profile, uid, customers, onLogout }) {
   const mineTransfer = [...paidMap.values()].filter((p) => p.status === "transfer").reduce((s, p) => s + p.jumlah, 0);
   const mineDobel = [...paidMap.values()].filter((p) => p.status === "lunas_dobel").reduce((s, p) => s + p.jumlah, 0);
   const mineKurang = [...paidMap.values()].filter((p) => p.status === "kurang").reduce((s, p) => s + p.jumlah, 0);
+  const mineKekurangan = [...paidMap.values()].filter((p) => p.status === "kurang").reduce((s, p) => s + (kekuranganOf(p) || 0), 0);
+  const kurangCount = mine.filter((c) => paidMap.get(c.id)?.status === "kurang").length;
+  const belumCount = mine.length - sudahBayarCount - kurangCount;
   const belumTanpaKet = mine.filter((c) => {
     const p = paidMap.get(c.id);
     if (!p) return true;
@@ -1066,7 +1255,7 @@ function PenagihView({ profile, uid, customers, onLogout }) {
   });
   const isCurrentMonth = entryMonth === monthKey();
 
-  const save = (customer, status, keterangan, jumlah, dobel) => savePaymentRecord({ month: entryMonth, customer, status, keterangan, jumlah, penagihUid: uid, dobel });
+  const save = (customer, status, keterangan, jumlah, dobel, extra) => savePaymentRecord({ month: entryMonth, customer, status, keterangan, jumlah, penagihUid: uid, dobel, ...extra });
 
   return (
     <div className="min-h-screen pb-6 relative" style={{ background: CREAM }}>
@@ -1112,8 +1301,9 @@ function PenagihView({ profile, uid, customers, onLogout }) {
             <div className="grid grid-cols-2 gap-2">
               <div className="rounded-2xl bg-white/10 p-3"><div className="text-white/70 text-xs mb-1">Cash</div><div className="text-white font-mono font-semibold text-sm">{rupiah(mineCash)}</div></div>
               <div className="rounded-2xl bg-white/10 p-3"><div className="text-white/70 text-xs mb-1">Transfer</div><div className="text-white font-mono font-semibold text-sm">{rupiah(mineTransfer)}</div></div>
-              <div className="rounded-2xl bg-white/10 p-3"><div className="text-white/70 text-xs mb-1">Kurang</div><div className="text-white font-mono font-semibold text-sm">{rupiah(mineKurang)}</div></div>
+              <div className="rounded-2xl bg-white/10 p-3"><div className="text-white/70 text-xs mb-1">Dibayar (kurang)</div><div className="text-white font-mono font-semibold text-sm">{rupiah(mineKurang)}</div></div>
               <div className="rounded-2xl bg-white/10 p-3"><div className="text-white/70 text-xs mb-1">Bayar Dobel</div><div className="text-white font-mono font-semibold text-sm">{rupiah(mineDobel)}</div></div>
+              <div className="rounded-2xl bg-white/10 p-3 col-span-2"><div className="text-white/70 text-xs mb-1">Total Kekurangan ({kurangCount} pelanggan)</div><div className="text-white font-mono font-semibold text-sm">{rupiah(mineKekurangan)}</div></div>
             </div>
           </div>
         )}
@@ -1124,6 +1314,7 @@ function PenagihView({ profile, uid, customers, onLogout }) {
             <p className="text-xs" style={{ color: NAVY }}>Anda sedang mencatat pembayaran untuk <b>{monthLabel(entryMonth)}</b> — bukan bulan berjalan. Cocok untuk mencatat pelanggan yang baru bayar sekarang meski tagihan bulan itu sudah lewat.</p>
           </div>
         )}
+        {mine.length > 0 && <PercentCard title={`Persentase Pembayaran ${monthLabel(entryMonth)}`} lunas={sudahBayarCount} kurang={kurangCount} belum={belumCount} />}
         {belumTanpaKet.length > 0 && (
           <div className="rounded-2xl bg-white border border-gray-100 p-4 mb-3">
             <div className="font-semibold text-sm mb-1" style={{ color: AMBER }}>Belum bayar & belum ada keterangan ({belumTanpaKet.length})</div>
@@ -1139,6 +1330,7 @@ function PenagihView({ profile, uid, customers, onLogout }) {
             ["semua", `Semua (${mine.length})`, NAVY],
             ["sudah", `Sudah Membayar (${sudahBayarCount})`, TEAL],
             ["belum", `Belum Membayar (${mine.length - sudahBayarCount})`, AMBER],
+            ["kurang", `Bayar Kurang (${kurangCount})`, "#B98900"],
             ["dobel", `Minta Dobel Bln Depan (${mintaDobelCount})`, "#B0362A"],
             ["dobel_lunas", `Sudah Bayar Dobel (${bayarDobelCount})`, "#7C2D12"],
           ].map(([k, label, color]) => (
