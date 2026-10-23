@@ -158,6 +158,7 @@ async function saveTunggakan(customerId, value) {
 }
 
 // ---------- Log aktivitas penagih (dibaca Admin lewat ActivityCenter) ----------
+let lastLoginLoggedAt = 0;
 async function logActivity(data) {
   try {
     await addDoc(collection(db, "activities"), { ...data, createdAt: new Date().toISOString() });
@@ -425,6 +426,7 @@ function LoginScreen({ error }) {
       try {
         const snap = await getDoc(doc(db, "users", cred.user.uid));
         if (snap.exists() && snap.data().role === "penagih") {
+          lastLoginLoggedAt = Date.now();
           await logActivity({ type: "login", penagihId: cred.user.uid, penagihNama: snap.data().nama || email.trim() });
         }
       } catch {}
@@ -676,11 +678,13 @@ function BulkImportForm({ onCancel, onImported, penagihList }) {
 // ---------- Notifikasi aktivitas penagih (untuk Admin) ----------
 const activityText = (a) => {
   if (a.type === "login") return `${a.penagihNama} login`;
+  if (a.type === "open") return `${a.penagihNama} membuka aplikasi`;
   const st = STATUS_LABEL[a.status]?.label || a.status;
   const jml = a.jumlah > 0 ? ` · ${rupiah(a.jumlah)}` : "";
   return `${a.penagihNama} mencatat ${a.customerNama || "pelanggan"} — ${st}${jml}`;
 };
-const activityTitle = (a) => (a.type === "login" ? "Penagih Login" : "Pembayaran Disimpan");
+const activityTitle = (a) => (a.type === "login" ? "Penagih Login" : a.type === "open" ? "Aplikasi Dibuka" : "Pembayaran Disimpan");
+const activityStyle = (a) => (a.type === "login" ? { color: NAVY, Icon: Lock } : a.type === "open" ? { color: "#B98900", Icon: History } : { color: TEAL, Icon: Wallet });
 const activityTime = (iso) => {
   const d = new Date(iso);
   const p = (n) => String(n).padStart(2, "0");
@@ -741,8 +745,7 @@ function ActivityCenter() {
           <style>{`@keyframes notifSlideIn { from { transform: translateY(-24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }`}</style>
           <div className="fixed top-3 inset-x-3 z-[70] flex flex-col items-center gap-2 pointer-events-none">
             {toasts.map((a) => {
-              const color = a.type === "login" ? NAVY : TEAL;
-              const Icon = a.type === "login" ? Lock : Wallet;
+              const { color, Icon } = activityStyle(a);
               return (
                 <button key={a.id} onClick={() => setToasts((t) => t.filter((x) => x.id !== a.id))}
                   className="pointer-events-auto w-full max-w-sm text-left rounded-2xl bg-white shadow-xl border border-gray-100 p-3 flex gap-3 items-start"
@@ -770,7 +773,7 @@ function ActivityCenter() {
                 {items.length === 0 && <p className="text-xs text-gray-400 text-center py-8">Belum ada aktivitas.</p>}
                 {items.map((a) => (
                   <div key={a.id} className="px-4 py-2.5 border-b border-gray-50 flex gap-3 items-start">
-                    <span className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: a.type === "login" ? NAVY : TEAL }} />
+                    <span className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: activityStyle(a).color }} />
                     <div className="min-w-0">
                       <div className="text-sm" style={{ color: INK }}>{activityText(a)}</div>
                       <div className="text-xs text-gray-400">{activityTime(a.createdAt)}</div>
@@ -1352,6 +1355,20 @@ function PayRow({ customer, existing, onSave, month }) {
 }
 
 function PenagihView({ profile, uid, customers, onLogout }) {
+  // Catat saat penagih membuka aplikasi: sekali saat halaman dimuat, dan lagi kalau kembali ke aplikasi
+  // setelah ditinggal lebih dari 5 menit (mis. HP dikunci lalu dibuka lagi).
+  useEffect(() => {
+    const logOpen = () => logActivity({ type: "open", penagihId: uid, penagihNama: profile.nama });
+    if (Date.now() - lastLoginLoggedAt > 15000) logOpen(); // lewati kalau baru saja login lewat form
+    let hiddenAt = null;
+    const onVis = () => {
+      if (document.hidden) { hiddenAt = Date.now(); return; }
+      if (hiddenAt && Date.now() - hiddenAt > 5 * 60 * 1000) logOpen();
+      hiddenAt = null;
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [uid]);
   const [entryMonth, setEntryMonth] = useState(monthKey());
   const [showDetail, setShowDetail] = useState(false);
   const payments = usePayments(entryMonth);
