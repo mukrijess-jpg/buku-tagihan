@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
-import { getFirestore, collection, doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "firebase/firestore";
+import { getFirestore, collection, doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch, orderBy, limit } from "firebase/firestore";
 import { firebaseConfig } from "./firebaseConfig";
-import { Search, Plus, X, Users, Wallet, Ban, LogOut, Loader2, Lock, Mail, Pencil, History, ShieldCheck, Upload, Trash2, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
+import { Bell, Search, Plus, X, Users, Wallet, Ban, LogOut, Loader2, Lock, Mail, Pencil, History, ShieldCheck, Upload, Trash2, CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -156,7 +157,16 @@ async function saveTunggakan(customerId, value) {
   await updateDoc(doc(db, "customers", customerId), { tunggakan: Math.max(0, Number(value) || 0) });
 }
 
-async function savePaymentRecord({ month, customer, status, keterangan, jumlah, penagihUid, dobel, tagihan, tglBayar }) {
+// ---------- Log aktivitas penagih (dibaca Admin lewat ActivityCenter) ----------
+async function logActivity(data) {
+  try {
+    await addDoc(collection(db, "activities"), { ...data, createdAt: new Date().toISOString() });
+  } catch (e) {
+    console.error("Gagal mencatat aktivitas", e);
+  }
+}
+
+async function savePaymentRecord({ month, customer, status, keterangan, jumlah, penagihUid, dobel, tagihan, tglBayar, notifyName }) {
   const payId = `${month}_${customer.id}`;
   const isDobel = status === "lunas_dobel" || !!dobel;
   const { nunggakBulan, dendaBulanDepan } = nextNunggakState(customer, month, status, isDobel);
@@ -180,6 +190,14 @@ async function savePaymentRecord({ month, customer, status, keterangan, jumlah, 
     dobel: isDobel,
     tagihan: tagihanFinal, kekurangan, tglBayar: tglFinal,
   });
+
+  // Beri tahu Admin kalau yang menyimpan adalah penagih
+  if (notifyName) {
+    await logActivity({
+      type: "payment", penagihId: penagihUid, penagihNama: notifyName,
+      customerNama: customer.nama || "", status, jumlah: jumlah || 0, month,
+    });
+  }
 
   const current = Array.isArray(customer.nunggakBulan) ? customer.nunggakBulan : [];
   const chainChanged = dendaBulanDepan !== (customer.dendaBulanDepan || false)
@@ -402,7 +420,14 @@ function LoginScreen({ error }) {
   const doLogin = async () => {
     setLocalError(null); setLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), pw);
+      const cred = await signInWithEmailAndPassword(auth, email.trim(), pw);
+      // Catat aktivitas login penagih (gagal mencatat tidak boleh menggagalkan login)
+      try {
+        const snap = await getDoc(doc(db, "users", cred.user.uid));
+        if (snap.exists() && snap.data().role === "penagih") {
+          await logActivity({ type: "login", penagihId: cred.user.uid, penagihNama: snap.data().nama || email.trim() });
+        }
+      } catch {}
     } catch (e) {
       setLocalError("Email atau kata sandi salah.");
     }
@@ -648,6 +673,120 @@ function BulkImportForm({ onCancel, onImported, penagihList }) {
 }
 
 // ---------- Panel Admin ----------
+// ---------- Notifikasi aktivitas penagih (untuk Admin) ----------
+const activityText = (a) => {
+  if (a.type === "login") return `${a.penagihNama} login`;
+  const st = STATUS_LABEL[a.status]?.label || a.status;
+  const jml = a.jumlah > 0 ? ` · ${rupiah(a.jumlah)}` : "";
+  return `${a.penagihNama} mencatat ${a.customerNama || "pelanggan"} — ${st}${jml}`;
+};
+const activityTitle = (a) => (a.type === "login" ? "Penagih Login" : "Pembayaran Disimpan");
+const activityTime = (iso) => {
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${fmtTgl(localDateStr(d))} · ${p(d.getHours())}.${p(d.getMinutes())}.${p(d.getSeconds())}`;
+};
+
+function ActivityCenter() {
+  const [items, setItems] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [toasts, setToasts] = useState([]);
+  const [seenAt, setSeenAt] = useState(() => {
+    try { return localStorage.getItem("activitySeenAt") || ""; } catch { return ""; }
+  });
+  const firstLoad = useRef(true);
+
+  useEffect(() => {
+    const q = query(collection(db, "activities"), orderBy("createdAt", "desc"), limit(100));
+    return onSnapshot(q, (snap) => {
+      setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      if (firstLoad.current) { firstLoad.current = false; return; } // jangan munculkan toast untuk data lama
+      snap.docChanges().forEach((ch) => {
+        if (ch.type !== "added") return;
+        const a = { id: ch.doc.id, ...ch.doc.data() };
+        setToasts((t) => [...t, a].slice(-4));
+        setTimeout(() => setToasts((t) => t.filter((x) => x.id !== a.id)), 8000);
+        if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+          new Notification(activityTitle(a), { body: `${activityText(a)}\n${activityTime(a.createdAt)}` });
+        }
+      });
+    }, (e) => console.error("Gagal memuat aktivitas", e));
+  }, []);
+
+  const unread = items.filter((a) => a.createdAt > seenAt).length;
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) {
+      const now = new Date().toISOString();
+      setSeenAt(now);
+      try { localStorage.setItem("activitySeenAt", now); } catch {}
+      if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+    }
+  };
+
+  return (
+    <>
+      <button onClick={toggle} className="relative text-white/70" aria-label="Notifikasi aktivitas penagih">
+        <Bell size={18} />
+        {unread > 0 && (
+          <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-bold flex items-center justify-center text-white" style={{ background: AMBER }}>
+            {unread > 99 ? "99+" : unread}
+          </span>
+        )}
+      </button>
+      {createPortal(
+        <>
+          <style>{`@keyframes notifSlideIn { from { transform: translateY(-24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }`}</style>
+          <div className="fixed top-3 inset-x-3 z-[70] flex flex-col items-center gap-2 pointer-events-none">
+            {toasts.map((a) => {
+              const color = a.type === "login" ? NAVY : TEAL;
+              const Icon = a.type === "login" ? Lock : Wallet;
+              return (
+                <button key={a.id} onClick={() => setToasts((t) => t.filter((x) => x.id !== a.id))}
+                  className="pointer-events-auto w-full max-w-sm text-left rounded-2xl bg-white shadow-xl border border-gray-100 p-3 flex gap-3 items-start"
+                  style={{ animation: "notifSlideIn .25s ease-out" }}>
+                  <span className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: color }}>
+                    <Icon size={16} color="white" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-semibold" style={{ color }}>{activityTitle(a)}</span>
+                    <span className="block text-sm leading-snug" style={{ color: INK }}>{activityText(a)}</span>
+                    <span className="block text-xs text-gray-400 mt-0.5">{activityTime(a.createdAt)}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-[60]" onClick={() => setOpen(false)} />
+              <div className="fixed top-16 right-3 left-3 sm:left-auto sm:w-96 z-[65] max-h-[70vh] overflow-y-auto rounded-2xl bg-white border border-gray-100 shadow-xl">
+                <div className="px-4 py-3 border-b border-gray-100 font-semibold text-sm flex items-center justify-between" style={{ color: NAVY }}>
+                  Aktivitas Penagih
+                  <button onClick={() => setOpen(false)} className="text-gray-400"><X size={16} /></button>
+                </div>
+                {items.length === 0 && <p className="text-xs text-gray-400 text-center py-8">Belum ada aktivitas.</p>}
+                {items.map((a) => (
+                  <div key={a.id} className="px-4 py-2.5 border-b border-gray-50 flex gap-3 items-start">
+                    <span className="mt-1.5 w-2 h-2 rounded-full shrink-0" style={{ background: a.type === "login" ? NAVY : TEAL }} />
+                    <div className="min-w-0">
+                      <div className="text-sm" style={{ color: INK }}>{activityText(a)}</div>
+                      <div className="text-xs text-gray-400">{activityTime(a.createdAt)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>,
+        document.body
+      )}
+    </>
+  );
+}
+
 function AdminView({ profile, customers, penagihList, onLogout }) {
   const [tab, setTab] = useState("ringkasan");
   const [query, setQuery] = useState("");
@@ -770,7 +909,7 @@ function AdminView({ profile, customers, penagihList, onLogout }) {
               <div className="text-white font-bold text-lg" style={{ fontFamily: "'Sora', sans-serif" }}>Buku Tagihan</div>
             </div>
           </div>
-          <button onClick={onLogout} className="text-white/70"><LogOut size={18} /></button>
+          <div className="flex items-center gap-4"><ActivityCenter /><button onClick={onLogout} className="text-white/70"><LogOut size={18} /></button></div>
         </div>
         <div className="flex gap-2 mt-4 overflow-x-auto relative z-10">
           {[["ringkasan","Ringkasan"],["monitoring","Tgl Bayar"],["pelanggan","Pelanggan"],["penagih","Kinerja Penagih"],["riwayat","Riwayat Bulan"]].map(([k,label]) => (
@@ -1255,7 +1394,7 @@ function PenagihView({ profile, uid, customers, onLogout }) {
   });
   const isCurrentMonth = entryMonth === monthKey();
 
-  const save = (customer, status, keterangan, jumlah, dobel, extra) => savePaymentRecord({ month: entryMonth, customer, status, keterangan, jumlah, penagihUid: uid, dobel, ...extra });
+  const save = (customer, status, keterangan, jumlah, dobel, extra) => savePaymentRecord({ month: entryMonth, customer, status, keterangan, jumlah, penagihUid: uid, notifyName: profile.nama, dobel, ...extra });
 
   return (
     <div className="min-h-screen pb-6 relative" style={{ background: CREAM }}>
